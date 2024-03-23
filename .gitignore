@@ -1,0 +1,6 @@
+reactgpu
+build*
+__pycache__
+*.h5
+*.mp4
+*.nb
