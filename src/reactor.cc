@@ -1,10 +1,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/eigen.h>
-#include "reactgpu.cuh"
+#include "reactor.cuh"
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(reactgpu, m) {
+PYBIND11_MODULE(reactor, m) {
     py::class_<Reactor>(m, "Reactor")
         .def(py::init<const Eigen::Ref<const State>&,
              const Eigen::Ref<const State>&,

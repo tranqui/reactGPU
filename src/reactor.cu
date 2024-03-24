@@ -1,10 +1,10 @@
-#include "reactgpu.cuh"
+#include "reactor.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
-#include <math.h>
 
+#include <cmath>
 #include <stdexcept>
 #include <iostream>
 
@@ -74,25 +74,18 @@ namespace kernel
 
         __syncthreads();
 
-        // Laplacian with nth order stencil.
-        
-        // Scalar f_rhs = Du * (f[i-1][j] + f[i+1][j] + f[i][j-1] + f[i][j+1] - 4*f[i][j]);
-        // Scalar g_rhs = Dv * (g[i-1][j] + g[i+1][j] + g[i][j-1] + g[i][j+1] - 4*g[i][j]);
-        Scalar f_rhs = Du * (f[i-1][j] + f[i+1][j] + f[i][j-1] + f[i][j+1] - 4*f[i][j]);
-        Scalar g_rhs = Dv * (g[i-1][j] + g[i+1][j] + g[i][j-1] + g[i][j+1] - 4*g[i][j]);
+        // Laplacian with 2nd order stencil.
 
-        // Scalar f02 = (dyInv*dyInv*(2*f[si][-3 + sj] - 27*f[si][-2 + sj] + 270*f[si][-1 + sj] - 490*f[si][sj] + 270*f[si][1 + sj] - 27*f[si][2 + sj] + 2*f[si][3 + sj]))/180.;
-        // Scalar f20 = (dxInv*dxInv*(2*f[-3 + si][sj] - 27*f[-2 + si][sj] + 270*f[-1 + si][sj] - 490*f[si][sj] + 270*f[1 + si][sj] - 27*f[2 + si][sj] + 2*f[3 + si][sj]))/180.;
-        // Scalar f_rhs = f02 + f20;
-
-        // Scalar g02 = (dyInv*dyInv*(2*g[si][-3 + sj] - 27*g[si][-2 + sj] + 270*g[si][-1 + sj] - 490*g[si][sj] + 270*g[si][1 + sj] - 27*g[si][2 + sj] + 2*g[si][3 + sj]))/180.;
-        // Scalar g20 = (dxInv*dxInv*(2*g[-3 + si][sj] - 27*g[-2 + si][sj] + 270*g[-1 + si][sj] - 490*g[si][sj] + 270*g[1 + si][sj] - 27*g[2 + si][sj] + 2*g[3 + si][sj]))/180.;
-        // Scalar g_rhs = 10 * (g02 + g20);
+        Scalar f_rhs = Du * (  dxInv*dxInv * (f[i+1][j] + f[i-1][j])
+                             + dyInv*dyInv * (f[i][j+1] + f[i][j-1])
+                             - 2*(dxInv*dxInv + dyInv*dyInv) * f[i][j]);
+        Scalar g_rhs = Dv * (  dxInv*dxInv * (g[i+1][j] + g[i-1][j])
+                             + dyInv*dyInv * (g[i][j+1] + g[i][j-1])
+                             - 2*(dxInv*dxInv + dyInv*dyInv) * g[i][j]);
 
         // Add in chemical flux.
 
-        // Scalar chem_flux = (k + (1-k) * square(f[i][j]) / (1 + square(f[i][j]))) * g[i][j] - f[i][j];
-        Scalar chem_flux = (k + (1-k) * f[i][j]*f[i][j] / (1 + f[i][j]*f[i][j])) * g[i][j] - f[i][j];
+        Scalar chem_flux = Reactor::chemical_flux(k, f[i][j], g[i][j]);
         f_rhs += chem_flux;
         g_rhs -= chem_flux;
 
@@ -100,10 +93,6 @@ namespace kernel
 
         u[index] += f_rhs * dt;
         v[index] += g_rhs * dt;
-        // if (i == 0) u[index] = 0;
-        // if (i == nrows) u[index] = 0;
-        // if (j == 0) u[index] = 0;
-        // if (j == ncols) u[index] = 0;
     }
 
     __global__

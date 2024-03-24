@@ -1,6 +1,4 @@
-#ifndef REACTGPU_CUDA_H
-#define REACTGPU_CUDA_H
-
+#pragma once
 #include <Eigen/Eigen>
 
 template <typename Scalar>
@@ -13,7 +11,7 @@ using Scalar = double;
 
 using State = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
-// template <typename Self>
+
 class Reactor
 {
 private:
@@ -31,6 +29,12 @@ private:
     Scalar* rhs;
 
 public:
+    static constexpr inline
+    Scalar chemical_flux(Scalar k, Scalar u, Scalar v)
+    {
+        return (k + (1-k) * u*u / (1 + u*u))* v - u;
+    }
+
     Reactor(const Eigen::Ref<const State>& initial_u,
             const Eigen::Ref<const State>& initial_v,
             Scalar dt, Scalar dx, Scalar dy,
@@ -46,6 +50,3 @@ public:
     size_t step() const;
     Scalar time() const;
 };
-
-
-#endif

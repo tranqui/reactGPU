@@ -1,7 +1,7 @@
 import numpy as np, matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
-import reactgpu
+import reactor
 import cellpolarisation as cell
 
 import h5py, os, argparse
@@ -66,7 +66,7 @@ class ReactorTrajectory:
             assert v.shape == (self.Nx, self.Ny)
             step = 0
 
-        self.kernel = reactgpu.Reactor(u, v, self.dt, self.dx, self.dy, self.Du, self.Dv, self.k, step)
+        self.kernel = reactor.Reactor(u, v, self.dt, self.dx, self.dy, self.Du, self.Dv, self.k, step)
         return self.kernel
 
     @property
