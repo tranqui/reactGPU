@@ -1,6 +1,19 @@
 #pragma once
 #include <Eigen/Eigen>
 #include <tuple>
+#include <string>
+
+namespace kernel
+{
+    class CudaError : public std::runtime_error
+    {
+    public:
+        using std::runtime_error::runtime_error;
+    };
+
+    void check_error();
+}
+
 
 using Scalar = double;
 

@@ -5,6 +5,8 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(reactor, m) {
+    py::register_exception<kernel::CudaError>(m, "CudaException");
+
     py::class_<Reactor>(m, "Reactor")
         .def(py::init<const Eigen::Ref<const State>&,
              const Eigen::Ref<const State>&,

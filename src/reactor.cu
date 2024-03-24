@@ -11,6 +11,17 @@
 
 namespace kernel
 {
+    void check_error()
+    {
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess)
+        {
+            std::string message = "CUDA Kernel Error: " + std::string(cudaGetErrorString(error));
+            throw CudaError(message);
+        }
+    }
+
+
     // A utility to count number of functor parameters.
     template <typename T>
     struct Arity;
@@ -142,10 +153,7 @@ Reactor::Reactor(const Eigen::Ref<const State>& initial_u,
     cudaMemcpy(u, initial_u.data(), mem_size, cudaMemcpyHostToDevice);
     cudaMemcpy(v, initial_v.data(), mem_size, cudaMemcpyHostToDevice);
 
-    auto error = cudaGetLastError();
-    if (error != cudaSuccess) {
-        std::cerr << "CUDA Kernel Error: " << cudaGetErrorString(error) << std::endl;
-    }
+    kernel::check_error();
 }
 
 Reactor::~Reactor()
@@ -180,11 +188,7 @@ void Reactor::run(const int nsteps)
     }
 
     cudaDeviceSynchronize();
-
-    auto error = cudaGetLastError();
-    if (error != cudaSuccess) {
-        std::cerr << "CUDA Kernel Error: " << cudaGetErrorString(error) << std::endl;
-    }
+    kernel::check_error();
 
     current_step += nsteps;
 }
