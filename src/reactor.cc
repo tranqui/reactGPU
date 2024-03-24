@@ -15,8 +15,6 @@ PYBIND11_MODULE(reactor, m) {
              py::arg("Du"), py::arg("Dv"), py::arg("k"),
              py::arg("current_step")=0)
         .def("run", &Reactor::run, py::arg("nsteps"))
-        .def_property_readonly("rhs_cpu", &Reactor::rhs_cpu, py::return_value_policy::move)
-        .def_property_readonly("rhs_gpu", &Reactor::rhs_gpu, py::return_value_policy::move)
         .def_property_readonly("u", &Reactor::get_u, py::return_value_policy::move)
         .def_property_readonly("v", &Reactor::get_v, py::return_value_policy::move)
         .def_property_readonly("step", &Reactor::step)

@@ -1,15 +1,29 @@
 #pragma once
 #include <Eigen/Eigen>
-
-template <typename Scalar>
-constexpr Scalar square(Scalar x)
-{
-    return x*x;
-}
+#include <tuple>
 
 using Scalar = double;
 
 using State = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+
+template <typename Implementation>
+struct ChemicalFlux
+{
+    template <typename... Args>
+    inline auto operator()(Args&&... args) const
+    {
+        return static_cast<Implementation*>(this)->chemical_flux(std::forward<Args>(args)...);
+    }
+};
+
+struct CellPolarisation : public ChemicalFlux<CellPolarisation>
+{
+    inline static constexpr auto chemical_flux(Scalar u, Scalar v, Scalar k)
+    {
+        Scalar R = (k + (1-k) * u*u / (1 + u*u))* v - u;
+        return std::make_tuple(R, -R);
+    }
+};
 
 
 class Reactor
@@ -19,20 +33,19 @@ private:
     int nrows, ncols;
     size_t pitch_width, mem_size;
 
-    Scalar Du, Dv, k;
+    Scalar Du, Dv; // <- change to std::array<Scalar, m>?
+    Scalar k;
     size_t current_step;
 
     size_t pitch_u, pitch_v;
     Scalar* u;
     Scalar* v;
-    size_t pitch_rhs;
-    Scalar* rhs;
 
 public:
-    static constexpr inline
-    Scalar chemical_flux(Scalar k, Scalar u, Scalar v)
+    inline static constexpr
+    auto chemical_flux(Scalar u, Scalar v, Scalar k)
     {
-        return (k + (1-k) * u*u / (1 + u*u))* v - u;
+        return CellPolarisation::chemical_flux(u, v, k);
     }
 
     Reactor(const Eigen::Ref<const State>& initial_u,
@@ -43,8 +56,6 @@ public:
     ~Reactor();
 
     void run(int nsteps);
-    State rhs_cpu() const;
-    State rhs_gpu() const;
     State get_u() const;
     State get_v() const;
     size_t step() const;

@@ -11,16 +11,45 @@
 
 namespace kernel
 {
-    __constant__ Scalar dt, dxInv, dyInv;
-    __constant__ int nrows, ncols;
-    __constant__ Scalar Du, Dv, k;
+    // A utility to count number of functor parameters.
+    template <typename T>
+    struct Arity;
+
+    template <typename R, typename... Args>
+    struct Arity<R(*)(Args...)>
+    {
+        static constexpr size_t value = sizeof...(Args);
+    };
+
+    static constexpr int MAX_PARAMETERS = 256;
+    __constant__ Scalar chemical_flux_parameters[MAX_PARAMETERS];
+
+    template <typename Implementation, size_t... I, typename... Fields>
+    __device__ auto chemical_flux(std::index_sequence<I...>, Fields&&... fields)
+    {
+        return Implementation::chemical_flux(std::forward<Fields>(fields)...,
+                                             chemical_flux_parameters[I]...);
+    }
+
+    template <typename Implementation, typename... Fields>
+    __device__ auto chemical_flux(Fields&&... fields)
+    {
+        constexpr auto nparams = Arity<decltype(&Implementation::chemical_flux)>::value - sizeof...(fields);
+        return chemical_flux<Implementation>(std::make_index_sequence<nparams>{},
+                                             std::forward<Fields>(fields)...);
+    }
 
     static constexpr int tile_rows = 16;
     static constexpr int tile_cols = 16;
     static constexpr int num_ghost = 1;
 
-    __global__
-    void reactor_integration(Scalar* u, Scalar* v)
+    __constant__ Scalar dt, dxInv, dyInv;
+    __constant__ int nrows, ncols;
+    __constant__ Scalar Du, Dv;
+
+
+    // template <typename ChemicalFlux>
+    __global__ void reactor_integration(Scalar* u, Scalar* v)
     {
         __shared__ Scalar f[tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
         __shared__ Scalar g[tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
@@ -74,70 +103,19 @@ namespace kernel
 
         __syncthreads();
 
-        // Laplacian with 2nd order stencil.
-
-        Scalar f_rhs = Du * (  dxInv*dxInv * (f[i+1][j] + f[i-1][j])
-                             + dyInv*dyInv * (f[i][j+1] + f[i][j-1])
-                             - 2*(dxInv*dxInv + dyInv*dyInv) * f[i][j]);
-        Scalar g_rhs = Dv * (  dxInv*dxInv * (g[i+1][j] + g[i-1][j])
-                             + dyInv*dyInv * (g[i][j+1] + g[i][j-1])
-                             - 2*(dxInv*dxInv + dyInv*dyInv) * g[i][j]);
-
-        // Add in chemical flux.
-
-        Scalar chem_flux = Reactor::chemical_flux(k, f[i][j], g[i][j]);
-        f_rhs += chem_flux;
-        g_rhs -= chem_flux;
-
-        // Update concentrations with diffusion effects only
+        // Evolve with chemical flux for reactions.
+        auto [f_rhs, g_rhs] = chemical_flux<CellPolarisation>(f[i][j], g[i][j]);
+  
+        // Add in Laplacian (with 2nd order stencil) to make this reaction-diffusion.
+        f_rhs += Du * (  dxInv*dxInv * (f[i+1][j] + f[i-1][j])
+                       + dyInv*dyInv * (f[i][j+1] + f[i][j-1])
+                       - 2*(dxInv*dxInv + dyInv*dyInv) * f[i][j]);
+        g_rhs += Dv * (  dxInv*dxInv * (g[i+1][j] + g[i-1][j])
+                       + dyInv*dyInv * (g[i][j+1] + g[i][j-1])
+                       - 2*(dxInv*dxInv + dyInv*dyInv) * g[i][j]);
 
         u[index] += f_rhs * dt;
         v[index] += g_rhs * dt;
-    }
-
-    __global__
-    void rhs(Scalar* u, Scalar *rhs)
-    {
-        __shared__ Scalar f[tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
-
-        // Global indices.
-        const int row = blockIdx.y * blockDim.y + threadIdx.y;
-        const int col = blockIdx.x * blockDim.x + threadIdx.x;
-        const int index = col + row * ncols;
-
-        // Local indices.
-        const int i = threadIdx.y + num_ghost;
-        const int j = threadIdx.x + num_ghost;
-
-        // Load tile into shared memory.
-
-        f[i][j] = u[index];
-
-        // Fill in ghost points.
-
-        if (threadIdx.y < num_ghost)
-        {
-            f[i - num_ghost][j] = u[col + ((row - num_ghost + nrows) % nrows) * ncols];
-            f[i + tile_rows][j] = u[col + ((row + tile_rows) % nrows) * ncols];
-        }
-
-        if (threadIdx.x < num_ghost)
-        {
-            f[i][j - num_ghost] = u[(col - num_ghost + ncols) % ncols + row * ncols];
-            f[i][j + tile_cols] = u[(col + tile_cols) % ncols         + row * ncols];
-        }
-
-        if (threadIdx.x < num_ghost and threadIdx.y < num_ghost)
-        {
-            f[i - num_ghost][j - num_ghost] = u[(col - num_ghost + ncols) % ncols + ((row - num_ghost + nrows) % nrows) * ncols];
-            f[i - num_ghost][j + tile_cols] = u[(col + tile_cols) % ncols         + ((row - num_ghost + nrows) % nrows) * ncols];
-            f[i + tile_rows][j - num_ghost] = u[(col - num_ghost + ncols) % ncols + ((row + tile_rows) % nrows) * ncols];
-            f[i + tile_rows][j + tile_cols] = u[(col + tile_cols) % ncols         + ((row + tile_rows) % nrows) * ncols];
-        }
-
-        __syncthreads();
-        
-        rhs[index] = f[i+1][j] + f[i-1][j] + f[i][j+1] + f[i][j-1] - 4*f[i][j];
     }
 }
 
@@ -159,7 +137,6 @@ Reactor::Reactor(const Eigen::Ref<const State>& initial_u,
     // Initialize CUDA memory
     cudaMallocPitch(&u, &pitch_u, pitch_width, nrows);
     cudaMallocPitch(&v, &pitch_v, pitch_width, nrows);
-    cudaMallocPitch(&rhs, &pitch_rhs, pitch_width, nrows);
 
     // Copy initial state to CUDA memory
     cudaMemcpy(u, initial_u.data(), mem_size, cudaMemcpyHostToDevice);
@@ -175,7 +152,6 @@ Reactor::~Reactor()
 {
     cudaFree(u);
     cudaFree(v);
-    cudaFree(rhs);
 }
 
 void Reactor::run(const int nsteps)
@@ -188,7 +164,10 @@ void Reactor::run(const int nsteps)
     cudaMemcpyToSymbol(kernel::ncols, &ncols, sizeof(int), 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(kernel::Du, &Du, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(kernel::Dv, &Dv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::k, &k, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
+
+    // Extra system-dependent parameters for the chemical flux.
+    Scalar parameters[kernel::MAX_PARAMETERS] = {k};
+    cudaMemcpyToSymbol(kernel::chemical_flux_parameters, parameters, sizeof(parameters));
 
     // Calculate new state on device.
     const dim3 block_dim(kernel::tile_cols, kernel::tile_rows);
@@ -208,71 +187,6 @@ void Reactor::run(const int nsteps)
     }
 
     current_step += nsteps;
-}
-
-State Reactor::rhs_cpu() const
-{
-    auto f = get_u();
-    auto out = State(nrows, ncols);
-    out.setZero();
-    // std::cout << f << std::endl;
-
-    for (int i = 0; i < nrows; ++i)
-    {
-        int down = (i-1+nrows) % nrows;
-        int up = (i+1) % nrows;
-        for (int j = 0; j < ncols; ++j)
-        {
-            int left = (j-1+ncols) % ncols;
-            int right = (j+1) % ncols;
-            out(i,j) = f(i,left) + f(i,right) + f(up,j) + f(down,j) - 4*f(i,j);
-            // out(i,j) = f(left,j) + f(right,j) - 2*f(i,j);
-            // out(i,j) = f(i,up) + f(i,down) - 2*f(i,j);
-            // out(i,j) = f(i,left);
-        }
-    }
-
-    return out;
-}
-
-State Reactor::rhs_gpu() const
-{
-    // Set parameters on device.
-    cudaMemcpyToSymbol(kernel::dt, &dt, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::dxInv, &dxInv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::dyInv, &dyInv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::nrows, &nrows, sizeof(int), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::ncols, &ncols, sizeof(int), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::Du, &Du, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::Dv, &Dv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::k, &k, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-
-    // Calculate new state on device.
-    const dim3 block_dim(kernel::tile_cols, kernel::tile_rows);
-    const dim3 grid_size((ncols + block_dim.x - 1) / block_dim.x,
-                         (nrows + block_dim.y - 1) / block_dim.y);
-
-    {
-        auto error = cudaGetLastError();
-        if (error != cudaSuccess) {
-            std::cerr << "CUDA Kernel Error1: " << cudaGetErrorString(error) << std::endl;
-        }
-    }
-
-    kernel::rhs<<<grid_size, block_dim>>>(u, rhs);
-    cudaDeviceSynchronize();
-
-    {
-        auto error = cudaGetLastError();
-        if (error != cudaSuccess) {
-            std::cerr << "CUDA Kernel Error2: " << cudaGetErrorString(error) << std::endl;
-        }
-    }
-
-    auto out = State(nrows, ncols);
-    out.setZero();
-    cudaMemcpy(out.data(), rhs, mem_size, cudaMemcpyDeviceToHost);
-    return out;
 }
 
 State Reactor::get_u() const
