@@ -3,6 +3,16 @@
 #include <tuple>
 #include <string>
 
+
+// A utility to count number of functor parameters.
+template <typename T> struct Arity;
+template <typename R, typename... Args>
+struct Arity<R(*)(Args...)>
+{
+    static constexpr size_t value = sizeof...(Args);
+};
+
+
 namespace kernel
 {
     // Generic python-safe exception to contain errors on GPU execution.
@@ -31,10 +41,14 @@ struct ChemicalFlux
     {
         return static_cast<Implementation*>(this)->chemical_flux(std::forward<Args>(args)...);
     }
+
+    static constexpr std::size_t nparams = Arity<decltype(&Implementation::chemical_flux)>::value - Implementation::nspecies;
 };
 
 struct CellPolarisation : public ChemicalFlux<CellPolarisation>
 {
+    static constexpr std::size_t nspecies = 2;
+
     inline static constexpr auto chemical_flux(Scalar u, Scalar v, Scalar k)
     {
         Scalar R = (k + (1-k) * u*u / (1 + u*u))* v - u;
@@ -43,15 +57,18 @@ struct CellPolarisation : public ChemicalFlux<CellPolarisation>
 };
 
 
+// template <std::size_t nspecies, std::size_t nparams>
 class Reactor
 {
-private:
+protected:
     Scalar dt, dx, dy, dxInv, dyInv;
     int nrows, ncols;
     size_t pitch_width, mem_size;
 
-    Scalar Du, Dv; // <- change to std::array<Scalar, m>?
-    Scalar k;
+    static constexpr auto nspecies = CellPolarisation::nspecies;
+    static constexpr auto nparams = CellPolarisation::nparams;
+    std::array<Scalar, nspecies> D;
+    std::array<Scalar, nparams> flux_parameters;
     size_t current_step;
 
     size_t pitch_u, pitch_v;
@@ -59,17 +76,24 @@ private:
     Scalar* v;
 
 public:
-    inline static constexpr
-    auto chemical_flux(Scalar u, Scalar v, Scalar k)
-    {
-        return CellPolarisation::chemical_flux(u, v, k);
-    }
 
     Reactor(const Eigen::Ref<const State>& initial_u,
             const Eigen::Ref<const State>& initial_v,
             Scalar dt, Scalar dx, Scalar dy,
-            Scalar Du, Scalar Dv, Scalar k,
+            std::array<Scalar, nspecies> D, std::array<Scalar, nparams> params,
             size_t current_step=0);
+
+    // Option to pass lists of Scalars rather than STL containers for the parameters.
+    template<typename... Args>
+    Reactor(const Eigen::Ref<const State>& initial_u,
+            const Eigen::Ref<const State>& initial_v,
+            Scalar dt, Scalar dx, Scalar dy, Args&&... args)
+            : Reactor(initial_u, initial_v, dt, dx, dy,
+                      unpack<0,nspecies>(std::forward<Args>(args)...),
+                      unpack<nspecies,nparams>(std::forward<Args>(args)...),
+                      unpack_remaining<nspecies+nparams>(std::forward<Args>(args)...))
+    { }
+
     ~Reactor();
 
     void run(int nsteps);
@@ -77,4 +101,35 @@ public:
     State get_v() const;
     size_t step() const;
     Scalar time() const;
+
+private:
+    // Helper function to unpack N elements into one of the parameter arrays.
+    // This allows for more flexible constructors that can take lists of Scalars rather
+    // than having to cast them to an std::array.
+    template <size_t Start, size_t N, typename... Args>
+    static auto unpack(Args&&... args)
+    {
+        static_assert(sizeof...(Args) >= N + Start, "Not enough arguments provided.");
+        return unpack_implementation<Start, N>(std::make_index_sequence<N>{},
+                                               std::forward<Args>(args)...);
+    }
+    template<size_t Start, size_t N, size_t... Is, typename... Args>
+    static std::array<Scalar, N>
+    unpack_implementation(std::index_sequence<Is...>, Args&&... args)
+    {
+        return {{(std::get<Start + Is>(std::forward_as_tuple(args...)))...}};
+    }
+
+    // Helper to unpack current_step from the remaining arguments
+    // Extract the remaining arguments into a tuple, if any
+    template<size_t Start, typename... Args>
+    static auto unpack_remaining(Args&&... args)
+    {
+        static_assert(sizeof...(Args) >= Start, "Not enough arguments for unpacking remaining.");
+        if constexpr (sizeof...(Args) > Start)
+        {
+            return std::get<Start>(std::forward_as_tuple(args...));
+        }
+        else return std::make_tuple();
+    }
 };

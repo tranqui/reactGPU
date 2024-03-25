@@ -76,14 +76,6 @@ namespace kernel
     static constexpr int MAX_PARAMETERS = 256;
     __constant__ Scalar chemical_flux_parameters[MAX_PARAMETERS];
 
-    // A utility to count number of functor parameters.
-    template <typename T> struct Arity;
-    template <typename R, typename... Args>
-    struct Arity<R(*)(Args...)>
-    {
-        static constexpr size_t value = sizeof...(Args);
-    };
-
     // Evaluate chemical flux by unpacking the correct number of parameters to match
     // the implementation's signature.
     template <typename Implementation, size_t... I, typename... Fields>
@@ -95,7 +87,7 @@ namespace kernel
     template <typename Implementation, typename... Fields>
     __device__ auto evaluate_chemical_flux(Fields&&... fields)
     {
-        constexpr auto nparams = Arity<decltype(&Implementation::chemical_flux)>::value - sizeof...(fields);
+        constexpr auto nparams = Implementation::nparams;
         return evaluate_chemical_flux<Implementation>(std::make_index_sequence<nparams>{},
                                                       std::forward<Fields>(fields)...);
     }
@@ -200,14 +192,13 @@ namespace kernel
 Reactor::Reactor(const Eigen::Ref<const State>& initial_u,
                  const Eigen::Ref<const State>& initial_v,
                  Scalar dt, Scalar dx, Scalar dy,
-                 Scalar Du, Scalar Dv, Scalar k,
+                 std::array<Scalar, nspecies> D, std::array<Scalar, nparams> params,
                  size_t current_step)
     : dt(dt), dx(dx), dy(dy), dxInv(1/dx), dyInv(1/dy),
     nrows(initial_u.rows()), ncols(initial_u.cols()),
     pitch_width(initial_u.cols() * sizeof(Scalar)),
     mem_size(initial_u.rows() * initial_u.cols() * sizeof(Scalar)),
-    Du(Du), Dv(Dv), k(k),
-    current_step(current_step)
+    D(D), flux_parameters(params), current_step(current_step)
 {
     if (initial_v.rows() != nrows or initial_v.cols() != ncols)
         throw std::runtime_error("fields u and v do not have the same dimensions!");
@@ -232,19 +223,17 @@ Reactor::~Reactor()
 void Reactor::run(const int nsteps)
 {
     // Set parameters on device.
-    cudaMemcpyToSymbol(kernel::dt, &dt, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::dxInv, &dxInv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::dyInv, &dyInv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::nrows, &nrows, sizeof(int), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::ncols, &ncols, sizeof(int), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(kernel::dt, &dt, sizeof(Scalar));
+    cudaMemcpyToSymbol(kernel::dxInv, &dxInv, sizeof(Scalar));
+    cudaMemcpyToSymbol(kernel::dyInv, &dyInv, sizeof(Scalar));
+    cudaMemcpyToSymbol(kernel::nrows, &nrows, sizeof(int));
+    cudaMemcpyToSymbol(kernel::ncols, &ncols, sizeof(int));
 
     // Diffusion coefficients for each species.
-    Scalar D[kernel::MAX_FIELDS] = {Du, Dv};
-    cudaMemcpyToSymbol(kernel::D, D, sizeof(D));
+    cudaMemcpyToSymbol(kernel::D, &D, sizeof(D));
 
     // Extra system-dependent parameters for the chemical flux.
-    Scalar parameters[kernel::MAX_PARAMETERS] = {k};
-    cudaMemcpyToSymbol(kernel::chemical_flux_parameters, parameters, sizeof(parameters));
+    cudaMemcpyToSymbol(kernel::chemical_flux_parameters, &flux_parameters, sizeof(flux_parameters));
 
     // Calculate new state on device.
     const dim3 block_dim(kernel::tile_cols, kernel::tile_rows);
