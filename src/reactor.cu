@@ -34,8 +34,9 @@ namespace kernel
     // (specifically the Laplacian for diffusion) at the tile borders.
     static constexpr int num_ghost = 1; // <- minimum for second-order finite-difference stencil.
 
-    __constant__ Scalar dt, dxInv, dyInv;
-    __constant__ int nrows, ncols;
+    // Stencil parameters - 2d space (x, y), and time t.
+    __constant__ Scalar dt, dxInv, dyInv; // size of each space-time point
+    __constant__ int nrows, ncols;        // number of points in spatial grid
 
     // Diffusion coefficients for each species.
     static constexpr int MAX_FIELDS = 16;
