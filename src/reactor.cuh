@@ -30,8 +30,11 @@ namespace kernel
 
 
 using Scalar = double;
-
 using State = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+using StateRef = Eigen::Ref<const State>;
+
+
+/// System definitions
 
 template <typename Implementation>
 struct ChemicalFlux
@@ -42,12 +45,12 @@ struct ChemicalFlux
         return static_cast<Implementation*>(this)->chemical_flux(std::forward<Args>(args)...);
     }
 
-    static constexpr std::size_t nparams = Arity<decltype(&Implementation::chemical_flux)>::value - Implementation::nspecies;
+    static constexpr std::size_t nparams = Arity<decltype(&Implementation::chemical_flux)>::value - Implementation::nfields;
 };
 
 struct CellPolarisation : public ChemicalFlux<CellPolarisation>
 {
-    static constexpr std::size_t nspecies = 2;
+    static constexpr std::size_t nfields = 2;
 
     inline static constexpr auto chemical_flux(Scalar u, Scalar v, Scalar k)
     {
@@ -56,49 +59,101 @@ struct CellPolarisation : public ChemicalFlux<CellPolarisation>
     }
 };
 
+struct ToyModel : public ChemicalFlux<ToyModel>
+{
+    static constexpr std::size_t nfields = 3;
+
+    inline static constexpr auto chemical_flux(Scalar u, Scalar v, Scalar w, Scalar k)
+    {
+        Scalar R = (k + (1-k) * u*u / (1 + u*u))* v - u;
+        return std::make_tuple(R, -R, 0);
+    }
+};
+
+
+/// Simulation controller
+
+
+namespace details
+{
+    template<typename T, typename... Ts>
+    struct tuple_repeat;
+
+    template<typename T, std::size_t... Is>
+    struct tuple_repeat<T, std::index_sequence<Is...>>
+    {
+        // comma operator (Is, T) discards the index_sequence in favour of T, but makes
+        // the sequence a part of the expression so we can expand with ... thereby creating
+        // N copies. std::decay_t is needed otherwise the expression can become an rvalue. 
+        using type = std::tuple<std::decay_t<decltype(Is, std::declval<T>())>...>;
+    };
+}
+
+template <typename T, std::size_t N>
+using tuple_repeat = typename details::tuple_repeat<T, std::make_index_sequence<N>>::type;
+
 
 template <typename System>
 class Reactor
 {
+public:
+    static constexpr auto nfields = System::nfields;
+    static constexpr auto nparams = System::nparams;
+
+    using DeviceFields = tuple_repeat<Scalar*, nfields>;
+    // using HostFields = tuple_repeat<State, nfields>;
+    using InitialState = tuple_repeat<StateRef, nfields>;
+
 protected:
     Scalar dt, dx, dy, dxInv, dyInv;
     int nrows, ncols;
     size_t pitch_width, mem_size;
 
-    static constexpr auto nspecies = System::nspecies;
-    static constexpr auto nparams = System::nparams;
-    std::array<Scalar, nspecies> D;
+    std::array<Scalar, nfields> D;
     std::array<Scalar, nparams> flux_parameters;
     size_t current_step;
 
-    size_t pitch_u, pitch_v;
-    Scalar* u;
-    Scalar* v;
+    std::array<size_t, nfields> pitch;
+    DeviceFields fields;
 
 public:
-
-    Reactor(const Eigen::Ref<const State>& initial_u,
-            const Eigen::Ref<const State>& initial_v,
+    Reactor(const InitialState& initial_fields,
             Scalar dt, Scalar dx, Scalar dy,
-            std::array<Scalar, nspecies> D, std::array<Scalar, nparams> params,
+            std::array<Scalar, nfields> D,
+            std::array<Scalar, nparams> params,
             size_t current_step=0);
 
     // Option to pass lists of Scalars rather than STL containers for the parameters.
     template<typename... Args>
-    Reactor(const Eigen::Ref<const State>& initial_u,
-            const Eigen::Ref<const State>& initial_v,
+    Reactor(const InitialState& initial_fields,
             Scalar dt, Scalar dx, Scalar dy, Args&&... args)
-            : Reactor(initial_u, initial_v, dt, dx, dy,
-                      unpack<0,nspecies>(std::forward<Args>(args)...),
-                      unpack<nspecies,nparams>(std::forward<Args>(args)...),
-                      unpack_remaining<nspecies+nparams>(std::forward<Args>(args)...))
+            : Reactor(initial_fields, dt, dx, dy,
+                      unpack<0, nfields>(std::forward<Args>(args)...),
+                      unpack<nfields, nparams>(std::forward<Args>(args)...),
+                      unpack_remaining<nfields + nparams>(std::forward<Args>(args)...))
     { }
 
     ~Reactor();
 
     void run(int nsteps);
-    State get_u() const;
-    State get_v() const;
+    State get_field(Scalar* field) const;
+
+    template <std::size_t index> State get_field() const
+    {
+        return get_field(std::get<index>(fields));
+    }
+
+    template <std::size_t... Is>
+    auto get_fields_implementation(std::index_sequence<Is...>) const
+    {
+        return std::make_tuple(get_field<Is>()...);
+    }
+
+    auto get_fields() const
+    {
+        return get_fields_implementation(std::make_index_sequence<std::tuple_size<decltype(fields)>::value>{});
+    }
+
     size_t step() const;
     Scalar time() const;
 

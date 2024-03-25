@@ -9,6 +9,28 @@
 #include <iostream>
 
 
+
+/// Helper functions to navigate through a variadic number of fields at compile-time.
+
+// Apply lambda to each element of a tuple (a compile-time ranged-based for loop).
+template <size_t index = 0, typename Function, typename... T>
+inline __host__ __device__ typename std::enable_if<index == sizeof...(T), void>::type
+for_each(std::tuple<T...> &, Function) { }
+template <size_t index = 0, typename Function, typename... T>
+inline __host__ __device__ typename std::enable_if<index < sizeof...(T), void>::type
+for_each(std::tuple<T...>& t, Function f)
+{
+    f(index, std::get<index>(t));
+    for_each<index + 1, Function, T...>(t, f);
+}
+
+// Apply lambda function as a more conventional "for loop" (but at compile-time).
+template <std::size_t... Is, typename Function>
+inline __host__ __device__ void for_each(std::index_sequence<Is...>, Function func)
+{
+    (func(std::integral_constant<std::size_t, Is>{}), ...);
+}
+
 namespace kernel
 {
     // Check CUDA for errors after GPU execution and throw them.
@@ -41,28 +63,6 @@ namespace kernel
     // Diffusion coefficients for each species.
     static constexpr int MAX_FIELDS = 16;
     __constant__ Scalar D[MAX_FIELDS];
-
-
-    /// Helper functions to navigate through a variadic number of fields at compile-time.
-
-    // Apply lambda to each element of a tuple (a compile-time ranged-based for loop).
-    template <size_t index = 0, typename Function, typename... T>
-    __device__ inline typename std::enable_if<index == sizeof...(T), void>::type
-    for_each(std::tuple<T...> &, Function) { }
-    template <size_t index = 0, typename Function, typename... T>
-    __device__ inline typename std::enable_if<index < sizeof...(T), void>::type
-    for_each(std::tuple<T...>& t, Function f)
-    {
-        f(index, std::get<index>(t));
-        for_each<index + 1, Function, T...>(t, f);
-    }
-
-    // Apply lambda function as a more conventional "for loop" (but at compile-time).
-    template <std::size_t... Is, typename Function>
-    __device__ inline void for_each(std::index_sequence<Is...>, Function func)
-    {
-        (func(std::integral_constant<std::size_t, Is>{}), ...);
-    }
 
 
     /// Execution of chemical flux on CUDA device.
@@ -101,12 +101,11 @@ namespace kernel
 
     /// The kernel itself.
 
-    template <typename System, typename... Scalars>
-    __global__ void reactor_integration(Scalars*... fields)
+    template <typename System, typename Fields>
+    __global__ void reactor_integration(Fields fields)
     {
-        auto field_tuples = std::make_tuple(fields...);
-        constexpr size_t nfields = sizeof...(fields);
-        __shared__ Scalar tile[nfields][tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
+        constexpr size_t nfields = std::tuple_size<Fields>::value;
+        static_assert(nfields == System::nfields, "Number of fields passed incompatible with system!");
 
         // Global indices.
         const int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -118,13 +117,14 @@ namespace kernel
         const int j = threadIdx.x + num_ghost;
 
         // Load tile into shared memory.
+        __shared__ Scalar tile[nfields][tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
 
         {
             auto load = [&](size_t m, auto field)
             {
                 tile[m][i][j] = field[index];
             };
-            for_each(field_tuples, load);
+            for_each(fields, load);
         }
 
         // Fill in ghost points.
@@ -136,7 +136,7 @@ namespace kernel
                 tile[m][i - num_ghost][j] = field[col + ((row - num_ghost + nrows) % nrows) * ncols];
                 tile[m][i + tile_rows][j] = field[col + ((row + tile_rows) % nrows) * ncols];
             };
-            for_each(field_tuples, load);
+            for_each(fields, load);
         }
 
         if (threadIdx.x < num_ghost)
@@ -146,7 +146,7 @@ namespace kernel
                 tile[m][i][j - num_ghost] = field[(col - num_ghost + ncols) % ncols + row * ncols];
                 tile[m][i][j + tile_cols] = field[(col + tile_cols) % ncols         + row * ncols];
             };
-            for_each(field_tuples, load);
+            for_each(fields, load);
         }
 
         if (threadIdx.x < num_ghost and threadIdx.y < num_ghost)
@@ -158,7 +158,7 @@ namespace kernel
                 tile[m][i + tile_rows][j - num_ghost] = field[(col - num_ghost + ncols) % ncols + ((row + tile_rows) % nrows) * ncols];
                 tile[m][i + tile_rows][j + tile_cols] = field[(col + tile_cols) % ncols         + ((row + tile_rows) % nrows) * ncols];
             };
-            for_each(field_tuples, load);
+            for_each(fields, load);
         }
 
         __syncthreads();
@@ -183,34 +183,36 @@ namespace kernel
         // Integrate the original field with an Euler forward step and we're done.
         auto evolve = [&](auto m)
         {
-            std::get<m>(field_tuples)[index] += std::get<m>(rhs) * dt;
+            std::get<m>(fields)[index] += std::get<m>(rhs) * dt;
         };
         for_each(std::make_index_sequence<nfields>{}, evolve);
     }
 }
 
 template <typename System>
-Reactor<System>::Reactor(const Eigen::Ref<const State>& initial_u,
-                 const Eigen::Ref<const State>& initial_v,
-                 Scalar dt, Scalar dx, Scalar dy,
-                 std::array<Scalar, nspecies> D, std::array<Scalar, nparams> params,
-                 size_t current_step)
+Reactor<System>::Reactor(const InitialState& initial_fields,
+                         Scalar dt, Scalar dx, Scalar dy,
+                         std::array<Scalar, nfields> D,
+                         std::array<Scalar, nparams> params,
+                         size_t current_step)
     : dt(dt), dx(dx), dy(dy), dxInv(1/dx), dyInv(1/dy),
-    nrows(initial_u.rows()), ncols(initial_u.cols()),
-    pitch_width(initial_u.cols() * sizeof(Scalar)),
-    mem_size(initial_u.rows() * initial_u.cols() * sizeof(Scalar)),
+    nrows(std::get<0>(initial_fields).rows()),
+    ncols(std::get<0>(initial_fields).cols()),
+    pitch_width(std::get<0>(initial_fields).cols() * sizeof(Scalar)),
+    mem_size(std::get<0>(initial_fields).rows() * std::get<0>(initial_fields).cols() * sizeof(Scalar)),
     D(D), flux_parameters(params), current_step(current_step)
 {
-    if (initial_v.rows() != nrows or initial_v.cols() != ncols)
-        throw std::runtime_error("fields u and v do not have the same dimensions!");
+    auto malloc = [&](auto m)
+    {
+        if (std::get<m>(initial_fields).rows() != nrows or std::get<1>(initial_fields).cols() != ncols)
+            throw std::runtime_error("fields u and v do not have the same dimensions!");
 
-    // Initialize CUDA memory
-    cudaMallocPitch(&u, &pitch_u, pitch_width, nrows);
-    cudaMallocPitch(&v, &pitch_v, pitch_width, nrows);
-
-    // Copy initial state to CUDA memory
-    cudaMemcpy(u, initial_u.data(), mem_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(v, initial_v.data(), mem_size, cudaMemcpyHostToDevice);
+        // Initialize device memory.
+        cudaMallocPitch(&std::get<m>(fields), &pitch[m], pitch_width, nrows);
+        // Copy initial state onto device.
+        cudaMemcpy(std::get<m>(fields), std::get<m>(initial_fields).data(), mem_size, cudaMemcpyHostToDevice);
+    };
+    for_each(std::make_index_sequence<nfields>{}, malloc);
 
     kernel::throw_errors();
 }
@@ -218,8 +220,8 @@ Reactor<System>::Reactor(const Eigen::Ref<const State>& initial_u,
 template <typename System>
 Reactor<System>::~Reactor()
 {
-    cudaFree(u);
-    cudaFree(v);
+    cudaFree(std::get<0>(fields));
+    cudaFree(std::get<1>(fields));
 }
 
 template <typename System>
@@ -245,7 +247,7 @@ void Reactor<System>::run(const int nsteps)
 
     for (int step = 0; step < nsteps; ++step)
     {
-        kernel::reactor_integration<System><<<grid_size, block_dim>>>(u, v);
+        kernel::reactor_integration<System><<<grid_size, block_dim>>>(fields);
     }
 
     cudaDeviceSynchronize();
@@ -255,18 +257,10 @@ void Reactor<System>::run(const int nsteps)
 }
 
 template <typename System>
-State Reactor<System>::get_u() const
+State Reactor<System>::get_field(Scalar* field) const
 {
     auto out = State(nrows, ncols);
-    cudaMemcpy(out.data(), u, mem_size, cudaMemcpyDeviceToHost);
-    return out;
-}
-
-template <typename System>
-State Reactor<System>::get_v() const
-{
-    auto out = State(nrows, ncols);
-    cudaMemcpy(out.data(), v, mem_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(out.data(), field, mem_size, cudaMemcpyDeviceToHost);
     return out;
 }
 
@@ -283,4 +277,6 @@ Scalar Reactor<System>::time() const
 }
 
 
+// Define the systems here so CUDA compiler (nvcc) knows to compile them.
 template class Reactor<CellPolarisation>;
+template class Reactor<ToyModel>;
