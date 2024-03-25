@@ -57,7 +57,7 @@ struct CellPolarisation : public ChemicalFlux<CellPolarisation>
 };
 
 
-// template <std::size_t nspecies, std::size_t nparams>
+template <typename System>
 class Reactor
 {
 protected:
@@ -65,8 +65,8 @@ protected:
     int nrows, ncols;
     size_t pitch_width, mem_size;
 
-    static constexpr auto nspecies = CellPolarisation::nspecies;
-    static constexpr auto nparams = CellPolarisation::nparams;
+    static constexpr auto nspecies = System::nspecies;
+    static constexpr auto nparams = System::nparams;
     std::array<Scalar, nspecies> D;
     std::array<Scalar, nparams> flux_parameters;
     size_t current_step;

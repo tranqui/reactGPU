@@ -189,7 +189,8 @@ namespace kernel
     }
 }
 
-Reactor::Reactor(const Eigen::Ref<const State>& initial_u,
+template <typename System>
+Reactor<System>::Reactor(const Eigen::Ref<const State>& initial_u,
                  const Eigen::Ref<const State>& initial_v,
                  Scalar dt, Scalar dx, Scalar dy,
                  std::array<Scalar, nspecies> D, std::array<Scalar, nparams> params,
@@ -214,13 +215,15 @@ Reactor::Reactor(const Eigen::Ref<const State>& initial_u,
     kernel::throw_errors();
 }
 
-Reactor::~Reactor()
+template <typename System>
+Reactor<System>::~Reactor()
 {
     cudaFree(u);
     cudaFree(v);
 }
 
-void Reactor::run(const int nsteps)
+template <typename System>
+void Reactor<System>::run(const int nsteps)
 {
     // Set parameters on device.
     cudaMemcpyToSymbol(kernel::dt, &dt, sizeof(Scalar));
@@ -242,7 +245,7 @@ void Reactor::run(const int nsteps)
 
     for (int step = 0; step < nsteps; ++step)
     {
-        kernel::reactor_integration<CellPolarisation><<<grid_size, block_dim>>>(u, v);
+        kernel::reactor_integration<System><<<grid_size, block_dim>>>(u, v);
     }
 
     cudaDeviceSynchronize();
@@ -251,26 +254,33 @@ void Reactor::run(const int nsteps)
     current_step += nsteps;
 }
 
-State Reactor::get_u() const
+template <typename System>
+State Reactor<System>::get_u() const
 {
     auto out = State(nrows, ncols);
     cudaMemcpy(out.data(), u, mem_size, cudaMemcpyDeviceToHost);
     return out;
 }
 
-State Reactor::get_v() const
+template <typename System>
+State Reactor<System>::get_v() const
 {
     auto out = State(nrows, ncols);
     cudaMemcpy(out.data(), v, mem_size, cudaMemcpyDeviceToHost);
     return out;
 }
 
-size_t Reactor::step() const
+template <typename System>
+size_t Reactor<System>::step() const
 {
     return current_step;
 }
 
-Scalar Reactor::time() const
+template <typename System>
+Scalar Reactor<System>::time() const
 {
     return static_cast<Scalar>(current_step) * dt;
 }
+
+
+template class Reactor<CellPolarisation>;
