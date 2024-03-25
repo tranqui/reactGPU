@@ -11,59 +11,109 @@
 
 namespace kernel
 {
-    void check_error()
+    // Check CUDA for errors after GPU execution and throw them.
+    __host__ void throw_errors()
     {
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess)
         {
-            std::string message = "CUDA Kernel Error: " + std::string(cudaGetErrorString(error));
+            std::string message = "CUDA Kernel Error: "
+                                + std::string(cudaGetErrorString(error));
             throw CudaError(message);
         }
     }
 
+    // Implementation is on a 2d grid with periodic boundary conditions.
+    // GPU divided into an (tile_rows x tile_cols) tile (blocks) with
+    // a CUDA thread for each tile sharing this memory. Varying the tile size
+    // will potentially improve performance on different hardware - I found
+    // 16x16 was close to optimum on my machine for simulations on a 1024x1024 grid.
+    static constexpr int tile_rows = 16;
+    static constexpr int tile_cols = 16;
+    // We need ghost points for each tile so we can evaluate derivatives
+    // (specifically the Laplacian for diffusion) at the tile borders.
+    static constexpr int num_ghost = 1; // <- minimum for second-order finite-difference stencil.
+
+    __constant__ Scalar dt, dxInv, dyInv;
+    __constant__ int nrows, ncols;
+
+    // Diffusion coefficients for each species.
+    static constexpr int MAX_FIELDS = 16;
+    __constant__ Scalar D[MAX_FIELDS];
+
+
+    /// Helper functions to navigate through a variadic number of fields at compile-time.
+
+    // Apply lambda to each element of a tuple (a compile-time ranged-based for loop).
+    template <size_t index = 0, typename Function, typename... T>
+    __device__ inline typename std::enable_if<index == sizeof...(T), void>::type
+    for_each(std::tuple<T...> &, Function) { }
+    template <size_t index = 0, typename Function, typename... T>
+    __device__ inline typename std::enable_if<index < sizeof...(T), void>::type
+    for_each(std::tuple<T...>& t, Function f)
+    {
+        f(index, std::get<index>(t));
+        for_each<index + 1, Function, T...>(t, f);
+    }
+
+    // Apply lambda function as a more conventional "for loop" (but at compile-time).
+    template <std::size_t... Is, typename Function>
+    __device__ inline void for_each(std::index_sequence<Is...>, Function func)
+    {
+        (func(std::integral_constant<std::size_t, Is>{}), ...);
+    }
+
+
+    /// Execution of chemical flux on CUDA device.
+
+    // The chemical flux may take some number of constant parameters.
+    // The implementation of the chemical flux is known at compile-time, so we can read
+    // its function signature to determine the number via a bit of template metaprogramming.
+    // This makes it trivial to implement new systems by just defining a new chemical
+    // flux function. The implementation happens at compile-time, so should not have a
+    // performance overhead.
+    static constexpr int MAX_PARAMETERS = 256;
+    __constant__ Scalar chemical_flux_parameters[MAX_PARAMETERS];
 
     // A utility to count number of functor parameters.
-    template <typename T>
-    struct Arity;
-
+    template <typename T> struct Arity;
     template <typename R, typename... Args>
     struct Arity<R(*)(Args...)>
     {
         static constexpr size_t value = sizeof...(Args);
     };
 
-    static constexpr int MAX_PARAMETERS = 256;
-    __constant__ Scalar chemical_flux_parameters[MAX_PARAMETERS];
-
+    // Evaluate chemical flux by unpacking the correct number of parameters to match
+    // the implementation's signature.
     template <typename Implementation, size_t... I, typename... Fields>
-    __device__ auto chemical_flux(std::index_sequence<I...>, Fields&&... fields)
+    __device__ auto evaluate_chemical_flux(std::index_sequence<I...>, Fields&&... fields)
     {
         return Implementation::chemical_flux(std::forward<Fields>(fields)...,
                                              chemical_flux_parameters[I]...);
     }
-
     template <typename Implementation, typename... Fields>
-    __device__ auto chemical_flux(Fields&&... fields)
+    __device__ auto evaluate_chemical_flux(Fields&&... fields)
     {
         constexpr auto nparams = Arity<decltype(&Implementation::chemical_flux)>::value - sizeof...(fields);
-        return chemical_flux<Implementation>(std::make_index_sequence<nparams>{},
-                                             std::forward<Fields>(fields)...);
+        return evaluate_chemical_flux<Implementation>(std::make_index_sequence<nparams>{},
+                                                      std::forward<Fields>(fields)...);
     }
 
-    static constexpr int tile_rows = 16;
-    static constexpr int tile_cols = 16;
-    static constexpr int num_ghost = 1;
-
-    __constant__ Scalar dt, dxInv, dyInv;
-    __constant__ int nrows, ncols;
-    __constant__ Scalar Du, Dv;
+    // Extract the [i][j] element from each field in the tile.
+    template<typename Tile, std::size_t... Is>
+    __device__ auto local_fields(Tile&& tile, std::index_sequence<Is...>, int i, int j) {
+        return std::make_tuple(tile[Is][i][j]...);
+    }
 
 
-    // template <typename ChemicalFlux>
-    __global__ void reactor_integration(Scalar* u, Scalar* v)
+    /// The kernel itself.
+
+    template <typename System, typename... Scalars>
+    __global__ void reactor_integration(Scalars*... fields)
     {
-        __shared__ Scalar f[tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
-        __shared__ Scalar g[tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
+        auto field_tuples = std::make_tuple(fields...);
+        constexpr size_t nfields = sizeof...(fields);
+        __shared__ Scalar tile[nfields][tile_rows + 2*num_ghost][tile_cols + 2*num_ghost];
 
         // Global indices.
         const int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -76,57 +126,73 @@ namespace kernel
 
         // Load tile into shared memory.
 
-        f[i][j] = u[index];
-        g[i][j] = v[index];
+        {
+            auto load = [&](size_t m, auto field)
+            {
+                tile[m][i][j] = field[index];
+            };
+            for_each(field_tuples, load);
+        }
 
         // Fill in ghost points.
 
         if (threadIdx.y < num_ghost)
         {
-            f[i - num_ghost][j] = u[col + ((row - num_ghost + nrows) % nrows) * ncols];
-            f[i + tile_rows][j] = u[col + ((row + tile_rows) % nrows) * ncols];
-
-            g[i - num_ghost][j] = v[col + ((row - num_ghost + nrows) % nrows) * ncols];
-            g[i + tile_rows][j] = v[col + ((row + tile_rows) % nrows) * ncols];
+            auto load = [&](size_t m, auto field)
+            {
+                tile[m][i - num_ghost][j] = field[col + ((row - num_ghost + nrows) % nrows) * ncols];
+                tile[m][i + tile_rows][j] = field[col + ((row + tile_rows) % nrows) * ncols];
+            };
+            for_each(field_tuples, load);
         }
 
         if (threadIdx.x < num_ghost)
         {
-            f[i][j - num_ghost] = u[(col - num_ghost + ncols) % ncols + row * ncols];
-            f[i][j + tile_cols] = u[(col + tile_cols) % ncols         + row * ncols];
-
-            g[i][j - num_ghost] = v[(col - num_ghost + ncols) % ncols + row * ncols];
-            g[i][j + tile_cols] = v[(col + tile_cols) % ncols         + row * ncols];
+            auto load = [&](size_t m, auto field)
+            {
+                tile[m][i][j - num_ghost] = field[(col - num_ghost + ncols) % ncols + row * ncols];
+                tile[m][i][j + tile_cols] = field[(col + tile_cols) % ncols         + row * ncols];
+            };
+            for_each(field_tuples, load);
         }
 
         if (threadIdx.x < num_ghost and threadIdx.y < num_ghost)
         {
-            f[i - num_ghost][j - num_ghost] = u[(col - num_ghost + ncols) % ncols + ((row - num_ghost + nrows) % nrows) * ncols];
-            f[i - num_ghost][j + tile_cols] = u[(col + tile_cols) % ncols         + ((row - num_ghost + nrows) % nrows) * ncols];
-            f[i + tile_rows][j - num_ghost] = u[(col - num_ghost + ncols) % ncols + ((row + tile_rows) % nrows) * ncols];
-            f[i + tile_rows][j + tile_cols] = u[(col + tile_cols) % ncols         + ((row + tile_rows) % nrows) * ncols];
-
-            g[i - num_ghost][j - num_ghost] = v[(col - num_ghost + ncols) % ncols + ((row - num_ghost + nrows) % nrows) * ncols];
-            g[i - num_ghost][j + tile_cols] = v[(col + tile_cols) % ncols         + ((row - num_ghost + nrows) % nrows) * ncols];
-            g[i + tile_rows][j - num_ghost] = v[(col - num_ghost + ncols) % ncols + ((row + tile_rows) % nrows) * ncols];
-            g[i + tile_rows][j + tile_cols] = v[(col + tile_cols) % ncols         + ((row + tile_rows) % nrows) * ncols];
+            auto load = [&](size_t m, auto field)
+            {
+                tile[m][i - num_ghost][j - num_ghost] = field[(col - num_ghost + ncols) % ncols + ((row - num_ghost + nrows) % nrows) * ncols];
+                tile[m][i - num_ghost][j + tile_cols] = field[(col + tile_cols) % ncols         + ((row - num_ghost + nrows) % nrows) * ncols];
+                tile[m][i + tile_rows][j - num_ghost] = field[(col - num_ghost + ncols) % ncols + ((row + tile_rows) % nrows) * ncols];
+                tile[m][i + tile_rows][j + tile_cols] = field[(col + tile_cols) % ncols         + ((row + tile_rows) % nrows) * ncols];
+            };
+            for_each(field_tuples, load);
         }
 
         __syncthreads();
 
-        // Evolve with chemical flux for reactions.
-        auto [f_rhs, g_rhs] = chemical_flux<CellPolarisation>(f[i][j], g[i][j]);
-  
-        // Add in Laplacian (with 2nd order stencil) to make this reaction-diffusion.
-        f_rhs += Du * (  dxInv*dxInv * (f[i+1][j] + f[i-1][j])
-                       + dyInv*dyInv * (f[i][j+1] + f[i][j-1])
-                       - 2*(dxInv*dxInv + dyInv*dyInv) * f[i][j]);
-        g_rhs += Dv * (  dxInv*dxInv * (g[i+1][j] + g[i-1][j])
-                       + dyInv*dyInv * (g[i][j+1] + g[i][j-1])
-                       - 2*(dxInv*dxInv + dyInv*dyInv) * g[i][j]);
+        // Contributions to evolution equation from reactions.
+        auto flux = [&](auto&&... args)
+        {
+            return evaluate_chemical_flux<System>(std::forward<decltype(args)>(args)...);
+        };
+        auto rhs = std::apply(flux, local_fields(tile, std::make_index_sequence<nfields>{}, i, j));
 
-        u[index] += f_rhs * dt;
-        v[index] += g_rhs * dt;
+        // Contributions from Laplacian, making it into reaction-diffusion.
+        // Implementation uses a basic second-order central finite difference stencil.
+        auto diffusion = [&](auto m)
+        {
+            std::get<m>(rhs) += D[m] * (  dxInv*dxInv * (tile[m][i+1][j] + tile[m][i-1][j])
+                                        + dyInv*dyInv * (tile[m][i][j+1] + tile[m][i][j-1])
+                                        - 2*(dxInv*dxInv + dyInv*dyInv) * tile[m][i][j]);
+        };
+        for_each(std::make_index_sequence<nfields>{}, diffusion);
+
+        // Integrate the original field with an Euler forward step and we're done.
+        auto evolve = [&](auto m)
+        {
+            std::get<m>(field_tuples)[index] += std::get<m>(rhs) * dt;
+        };
+        for_each(std::make_index_sequence<nfields>{}, evolve);
     }
 }
 
@@ -153,7 +219,7 @@ Reactor::Reactor(const Eigen::Ref<const State>& initial_u,
     cudaMemcpy(u, initial_u.data(), mem_size, cudaMemcpyHostToDevice);
     cudaMemcpy(v, initial_v.data(), mem_size, cudaMemcpyHostToDevice);
 
-    kernel::check_error();
+    kernel::throw_errors();
 }
 
 Reactor::~Reactor()
@@ -170,8 +236,10 @@ void Reactor::run(const int nsteps)
     cudaMemcpyToSymbol(kernel::dyInv, &dyInv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(kernel::nrows, &nrows, sizeof(int), 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(kernel::ncols, &ncols, sizeof(int), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::Du, &Du, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(kernel::Dv, &Dv, sizeof(Scalar), 0, cudaMemcpyHostToDevice);
+
+    // Diffusion coefficients for each species.
+    Scalar D[kernel::MAX_FIELDS] = {Du, Dv};
+    cudaMemcpyToSymbol(kernel::D, D, sizeof(D));
 
     // Extra system-dependent parameters for the chemical flux.
     Scalar parameters[kernel::MAX_PARAMETERS] = {k};
@@ -184,11 +252,11 @@ void Reactor::run(const int nsteps)
 
     for (int step = 0; step < nsteps; ++step)
     {
-        kernel::reactor_integration<<<grid_size, block_dim>>>(u, v);
+        kernel::reactor_integration<CellPolarisation><<<grid_size, block_dim>>>(u, v);
     }
 
     cudaDeviceSynchronize();
-    kernel::check_error();
+    kernel::throw_errors();
 
     current_step += nsteps;
 }
