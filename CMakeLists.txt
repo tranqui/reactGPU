@@ -26,7 +26,7 @@ set_target_properties(reactor-kernel PROPERTIES
 )
 
 # Python bindings
-pybind11_add_module(reactor src/reactor.cc src/reactor.cuh)
+pybind11_add_module(reactor src/reactor.cc src/reactor.cuh src/models.h src/utilities.h)
 target_link_libraries(reactor PUBLIC pybind11::headers Eigen3::Eigen PRIVATE reactor-kernel)
 target_include_directories(reactor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${EIGEN3_INCLUDE_DIRS})
 set_target_properties(reactor PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/reactgpu)

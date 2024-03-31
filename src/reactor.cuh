@@ -1,16 +1,6 @@
 #pragma once
+#include "utilities.h"
 #include <Eigen/Eigen>
-#include <tuple>
-#include <string>
-
-
-// A utility to count number of functor parameters.
-template <typename T> struct Arity;
-template <typename R, typename... Args>
-struct Arity<R(*)(Args...)>
-{
-    static constexpr size_t value = sizeof...(Args);
-};
 
 
 namespace kernel
@@ -36,6 +26,16 @@ using StateRef = Eigen::Ref<const State>;
 
 /// System definitions
 
+/**
+ *  Implementation must define two functions: device_parameters and chemical_flux.
+ *  - chemical_flux: the reaction part of reaction-diffusion that defines the model.
+ *      This takes the local fields as arguments, as well as a certain number of parameters
+ *      and returns a py::tuple with the reaction rate for each field.
+ *  - device_parameters: calculates the parameters passed ot the GPU device from a set
+ *      of host parameters. This allows the host interface to use a convenient set of host
+ *      parameters, which are processed before execution on the device to optimise kernel
+ *      execution.
+ */
 template <typename Implementation>
 struct ChemicalFlux
 {
@@ -45,28 +45,32 @@ struct ChemicalFlux
         return static_cast<Implementation*>(this)->chemical_flux(std::forward<Args>(args)...);
     }
 
-    static constexpr std::size_t nparams = Arity<decltype(&Implementation::chemical_flux)>::value - Implementation::nfields;
-};
-
-struct CellPolarisation : public ChemicalFlux<CellPolarisation>
-{
-    static constexpr std::size_t nfields = 2;
-
-    inline static constexpr auto chemical_flux(Scalar u, Scalar v, Scalar k)
+    // Number of parameters describing the top-level model.
+    static constexpr std::size_t nparams_host()
     {
-        Scalar R = (k + (1-k) * u*u / (1 + u*u))* v - u;
-        return std::make_tuple(R, -R);
+        using device_parameters_type = decltype(&Implementation::device_parameters);
+        return Arity<device_parameters_type>::value;
     }
-};
 
-struct ToyModel : public ChemicalFlux<ToyModel>
-{
-    static constexpr std::size_t nfields = 3;
-
-    inline static constexpr auto chemical_flux(Scalar u, Scalar v, Scalar w, Scalar k)
+    // Number of (post-processed) parameters sent to the GPU device.
+    static constexpr std::size_t nparams_device()
     {
-        Scalar R = (k + (1-k) * u*u / (1 + u*u))* v - u;
-        return std::make_tuple(R, -R, 0);
+        using device_parameters_type = decltype(&Implementation::device_parameters);
+        using HostParameters = repeat_type<Scalar, nparams_host()>;
+        return Cardinality<device_parameters_type, HostParameters>::value;
+    }
+
+    // Arguments to chemical_flux include the fields *and* the device parameters.
+    static constexpr std::size_t nargs_flux()
+    {
+        using chemical_flux_type = decltype(&Implementation::chemical_flux);
+        return Arity<chemical_flux_type>::value;
+    }
+
+    // We can infer the number of fields defined in the model using the other information above.
+    static constexpr std::size_t nfields()
+    {
+        return nargs_flux() - nparams_device();
     }
 };
 
@@ -74,35 +78,17 @@ struct ToyModel : public ChemicalFlux<ToyModel>
 /// Simulation controller
 
 
-namespace details
-{
-    template<typename T, typename... Ts>
-    struct tuple_repeat;
-
-    template<typename T, std::size_t... Is>
-    struct tuple_repeat<T, std::index_sequence<Is...>>
-    {
-        // comma operator (Is, T) discards the index_sequence in favour of T, but makes
-        // the sequence a part of the expression so we can expand with ... thereby creating
-        // N copies. std::decay_t is needed otherwise the expression can become an rvalue. 
-        using type = std::tuple<std::decay_t<decltype(Is, std::declval<T>())>...>;
-    };
-}
-
-template <typename T, std::size_t N>
-using tuple_repeat = typename details::tuple_repeat<T, std::make_index_sequence<N>>::type;
-
-
 template <typename System>
 class Reactor
 {
 public:
-    static constexpr auto nfields = System::nfields;
-    static constexpr auto nparams = System::nparams;
+    static constexpr std::size_t nfields = System::nfields();
+    static constexpr std::size_t nparams_host = System::nparams_host();
+    static constexpr std::size_t nparams_device = System::nparams_device();
 
-    using DeviceFields = tuple_repeat<Scalar*, nfields>;
-    // using HostFields = tuple_repeat<State, nfields>;
-    using InitialState = tuple_repeat<StateRef, nfields>;
+    using DeviceFields = repeat_type<Scalar*, nfields>;
+    using HostFields = repeat_type<State, nfields>;
+    using InitialState = repeat_type<StateRef, nfields>;
 
 protected:
     Scalar dt, dx, dy, dxInv, dyInv;
@@ -110,81 +96,69 @@ protected:
     size_t pitch_width, mem_size;
 
     std::array<Scalar, nfields> D;
-    std::array<Scalar, nparams> flux_parameters;
-    size_t current_step;
+    std::array<Scalar, nparams_host> flux_parameters;
+    int current_step;
 
     std::array<size_t, nfields> pitch;
     DeviceFields fields;
 
 public:
+    // Copy constructors are not safe because GPU device memory will not be copied.
+    Reactor(const Reactor<System>&) = delete;
+    Reactor<System>& operator=(const Reactor<System>&) = delete;
+    // Move constructors are fine though.
+    Reactor<System>& operator=(Reactor<System>&&) noexcept = default;
+    Reactor(Reactor<System>&&) noexcept;
+
     Reactor(const InitialState& initial_fields,
             Scalar dt, Scalar dx, Scalar dy,
             std::array<Scalar, nfields> D,
-            std::array<Scalar, nparams> params,
-            size_t current_step=0);
+            std::array<Scalar, nparams_host> params,
+            int current_step=0);
 
     // Option to pass lists of Scalars rather than STL containers for the parameters.
     template<typename... Args>
     Reactor(const InitialState& initial_fields,
             Scalar dt, Scalar dx, Scalar dy, Args&&... args)
             : Reactor(initial_fields, dt, dx, dy,
-                      unpack<0, nfields>(std::forward<Args>(args)...),
-                      unpack<nfields, nparams>(std::forward<Args>(args)...),
-                      unpack_remaining<nfields + nparams>(std::forward<Args>(args)...))
+                      unpack_as_array<Scalar, 0, nfields>(std::forward<Args>(args)...),
+                      unpack_as_array<Scalar, nfields, nparams_host>(std::forward<Args>(args)...),
+                      unpack_remaining<nfields + nparams_host>(std::forward<Args>(args)...))
     { }
 
     ~Reactor();
 
     void run(int nsteps);
-    State get_field(Scalar* field) const;
 
-    template <std::size_t index> State get_field() const
+    template <std::size_t index>
+    State get_field() const
     {
         return get_field(std::get<index>(fields));
     }
 
-    template <std::size_t... Is>
-    auto get_fields_implementation(std::index_sequence<Is...>) const
+    template <std::size_t... I>
+    auto get_fields_implementation(std::index_sequence<I...>) const
     {
-        return std::make_tuple(get_field<Is>()...);
+        return std::make_tuple(get_field<I>()...);
     }
 
     auto get_fields() const
     {
-        return get_fields_implementation(std::make_index_sequence<std::tuple_size<decltype(fields)>::value>{});
+        return get_fields_implementation(std::make_index_sequence<std::tuple_size_v<decltype(fields)>>{});
     }
 
-    size_t step() const;
+    int step() const;
     Scalar time() const;
 
-private:
-    // Helper function to unpack N elements into one of the parameter arrays.
-    // This allows for more flexible constructors that can take lists of Scalars rather
-    // than having to cast them to an std::array.
-    template <size_t Start, size_t N, typename... Args>
-    static auto unpack(Args&&... args)
-    {
-        static_assert(sizeof...(Args) >= N + Start, "Not enough arguments provided.");
-        return unpack_implementation<Start, N>(std::make_index_sequence<N>{},
-                                               std::forward<Args>(args)...);
-    }
-    template<size_t Start, size_t N, size_t... Is, typename... Args>
-    static std::array<Scalar, N>
-    unpack_implementation(std::index_sequence<Is...>, Args&&... args)
-    {
-        return {{(std::get<Start + Is>(std::forward_as_tuple(args...)))...}};
-    }
+protected:
+    State get_field(Scalar* field) const;
+    void set_field(const State& source, Scalar* destination);
 
-    // Helper to unpack current_step from the remaining arguments
-    // Extract the remaining arguments into a tuple, if any
-    template<size_t Start, typename... Args>
-    static auto unpack_remaining(Args&&... args)
+    template <std::size_t index>
+    void set_field(const State& source)
     {
-        static_assert(sizeof...(Args) >= Start, "Not enough arguments for unpacking remaining.");
-        if constexpr (sizeof...(Args) > Start)
-        {
-            return std::get<Start>(std::forward_as_tuple(args...));
-        }
-        else return std::make_tuple();
+        set_field(source, std::get<index>(fields));
     }
 };
+
+#include "models.h"
