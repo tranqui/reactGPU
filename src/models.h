@@ -39,7 +39,7 @@ struct CellPolarisation : public ChemicalFlux<CellPolarisation>
  *  Note that to achieve the fine-tuning we require the diffusion coefficients,
  *    as the field coefficients emerges from both reaction and diffusion.
  */
-struct ToyModel : public ChemicalFlux<ToyModel>
+struct ActiveModelB : public ChemicalFlux<ActiveModelB>
 {
     static constexpr Scalar A = 0.25;
 

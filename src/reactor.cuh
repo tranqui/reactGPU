@@ -150,6 +150,16 @@ public:
     int step() const;
     Scalar time() const;
 
+    auto host_parameters() const
+    {
+        return flux_parameters;
+    }
+
+    std::array<Scalar, nparams_device> device_parameters() const
+    {
+        return std::apply(System::device_parameters, flux_parameters);
+    }
+
 protected:
     State get_field(Scalar* field) const;
     void set_field(const State& source, Scalar* destination);

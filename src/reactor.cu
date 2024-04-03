@@ -281,7 +281,7 @@ void Reactor<System>::run(const int nsteps)
     cudaMemcpyToSymbol(kernel::D, &D, sizeof(D));
 
     // Extra system-dependent parameters for the chemical flux.
-    std::array<Scalar, nparams_device> params = std::apply(System::device_parameters, flux_parameters);
+    auto params = device_parameters();
     cudaMemcpyToSymbol(kernel::chemical_flux_parameters, &params, sizeof(params));
 
     // Calculate new state on device.
@@ -343,4 +343,5 @@ Scalar Reactor<System>::time() const
 
 // Define the systems here so CUDA compiler (nvcc) knows to compile them.
 template class Reactor<CellPolarisation>;
+template class Reactor<ActiveModelB>;
 template class Reactor<ToyModel>;
