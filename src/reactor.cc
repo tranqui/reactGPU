@@ -36,6 +36,7 @@ PYBIND11_MODULE(reactor, m)
     py::register_exception<kernel::CudaError>(m, "CudaException");
 
     using Cell = Reactor<CellPolarisation>;
+    using Jacobs = Reactor<JacobsModel>;
     using AmB = Reactor<ActiveModelB>;
 
     {
@@ -60,6 +61,23 @@ PYBIND11_MODULE(reactor, m)
                     {
                         return self.get_field<1>();
                     }, py::return_value_policy::move);
+
+        define_common_interface(py_class);
+    }
+
+    {
+        py::class_<Jacobs> py_class(m, "JacobsModel");
+        py_class.def(py::init<const Jacobs::InitialState&,
+                        Scalar, Scalar, Scalar,
+                        Scalar, Scalar, Scalar,
+                        Scalar, Scalar, Scalar, Scalar,
+                        int>(),
+                py::arg("state"),
+                py::arg("dt"), py::arg("dx"), py::arg("dy"),
+                py::arg("Du"), py::arg("Dv"), py::arg("Dw"),
+                py::arg("k"), py::arg("c"), py::arg("d"), py::arg("psi"),
+                py::arg("current_step")=0);
+
         define_common_interface(py_class);
     }
 
@@ -112,6 +130,7 @@ PYBIND11_MODULE(reactor, m)
                     {
                         return self.get_field<2>();
                     }, py::return_value_policy::move);
+
         define_common_interface(py_class);
     }
 }

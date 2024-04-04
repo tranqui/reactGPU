@@ -21,6 +21,26 @@ struct CellPolarisation : public ChemicalFlux<CellPolarisation>
 };
 
 
+struct JacobsModel : public ChemicalFlux<JacobsModel>
+{
+    static constexpr int n = 2; // Hill coefficient for chemical flux.
+
+    inline static constexpr std::array<Scalar,4>
+    device_parameters(Scalar k, Scalar c, Scalar d, Scalar psi)
+    {
+        return {k, c, d, psi};
+    }
+
+    inline static constexpr auto
+    chemical_flux(Scalar u, Scalar v, Scalar w,
+                  Scalar k, Scalar c, Scalar d, Scalar psi)
+    {
+        Scalar R1 = (k + (1-k) * std::pow(u, n) / (1 + std::pow(u, n))) * v - (1 + w)*u;
+        Scalar R2 = c*u*(psi - w) - d*w;
+        return std::make_tuple(R1, -R1, R2);
+    }
+};
+
 /**
  *  A model with a finely-tuned chemical flux that, by construction, has an
  *  emergent Ginzburg-Landau bulk free energy, i.e.:
@@ -165,26 +185,12 @@ struct ActiveModelB : public ChemicalFlux<ActiveModelB>
         Scalar phi = u + v + w; // conserved order parameter (the density).
 
         // Nullcline position at this phi:
-        // Scalar u_eq = 0.25*phi * (3 + A - A*phi*phi);
-        // Scalar u_eq = phi * (A*(phi*phi - 1) - Dw) / (Du + 2*Dv - 3*Dw);
-        // Scalar u_eq = phi*(phi*phi - 2) / 3;
-        // Scalar v_eq = 2*u_eq;
         Scalar u_eq = phi * (A*(phi*phi - 1) - Dv) / (Du - Dw);
         Scalar v_eq = phi;
         Scalar w_eq = phi - v_eq - u_eq;
 
         // Perturbation from nullcline:
         Scalar drho[3] = {u - u_eq, v - v_eq, w - w_eq};
-
-        // constexpr Scalar L[3][3] = {{-2, 1, 1}, {1, -2, 1}, {1, 1, -2}};
-        // constexpr Scalar L[3][3] = {{-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
-        // constexpr Scalar L[3][3] = {{-1.5, 0, 1.5}, {1.5, -1.5, 0}, {0, 1.5, -1.5}};
-
-        // return std::make_tuple(
-        //     L[0][0] * drho[0] + L[0][1] * drho[1] + L[0][2] * drho[2],
-        //     L[1][0] * drho[0] + L[1][1] * drho[1] + L[1][2] * drho[2],
-        //     L[2][0] * drho[0] + L[2][1] * drho[1] + L[2][2] * drho[2]
-        // );
 
         // Coordinates within reactive subspace (i.e. within level sets of phi):
         Scalar x[2] = {(drho[1] - drho[0]) / std::sqrt(2),
@@ -194,8 +200,6 @@ struct ActiveModelB : public ChemicalFlux<ActiveModelB>
         auto L = linear_flux(phi, den2, num0_00, num0_01, num0_10, num0_11,
                                         num2_00, num2_01, num2_10, num2_11,
                                         num4_00, num4_01, num4_10, num4_11);
-        // // constexpr Scalar L[2][2] = {{-3, 0}, {0, -3}};   // gradient of chemical flux in terms of x
-        // constexpr Scalar L[2][2] = {{-3, 0}, {0, -3}};   // gradient of chemical flux in terms of x
         Scalar R[2] = {L[0][0] * x[0] + L[0][1] * x[1],
                        L[1][0] * x[0] + L[1][1] * x[1]}; // matrix multiplication
 
