@@ -37,6 +37,7 @@ PYBIND11_MODULE(reactor, m)
 
     using Cell = Reactor<CellPolarisation>;
     using Jacobs = Reactor<JacobsModel>;
+    using Murray = Reactor<MurrayModel>;
     using AmB = Reactor<ActiveModelB>;
 
     {
@@ -76,6 +77,24 @@ PYBIND11_MODULE(reactor, m)
                 py::arg("dt"), py::arg("dx"), py::arg("dy"),
                 py::arg("Du"), py::arg("Dv"), py::arg("Dw"),
                 py::arg("k"), py::arg("c"), py::arg("d"), py::arg("psi"),
+                py::arg("current_step")=0);
+
+        define_common_interface(py_class);
+    }
+
+    {
+        py::class_<Murray> py_class(m, "MurrayModel");
+        py_class.def(py::init<const Murray::InitialState&,
+                        Scalar, Scalar, Scalar,
+                        Scalar, Scalar, Scalar,
+                        Scalar, Scalar, Scalar,
+                        Scalar,
+                        int>(),
+                py::arg("state"),
+                py::arg("dt"), py::arg("dx"), py::arg("dy"),
+                py::arg("Du"), py::arg("Dv"), py::arg("Dw"),
+                py::arg("alpha"), py::arg("beta"), py::arg("gamma"),
+                py::arg("delta"),
                 py::arg("current_step")=0);
 
         define_common_interface(py_class);

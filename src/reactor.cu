@@ -344,4 +344,5 @@ Scalar Reactor<System>::time() const
 // Define the systems here so CUDA compiler (nvcc) knows to compile them.
 template class Reactor<CellPolarisation>;
 template class Reactor<JacobsModel>;
+template class Reactor<MurrayModel>;
 template class Reactor<ActiveModelB>;

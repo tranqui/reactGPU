@@ -41,6 +41,25 @@ struct JacobsModel : public ChemicalFlux<JacobsModel>
     }
 };
 
+
+struct MurrayModel : public ChemicalFlux<MurrayModel>
+{
+    inline static constexpr std::array<Scalar,4>
+    device_parameters(Scalar alpha, Scalar beta, Scalar gamma, Scalar delta)
+    {
+        return {alpha, beta, gamma, delta};
+    }
+
+    inline static constexpr auto
+    chemical_flux(Scalar u, Scalar v, Scalar w,
+                  Scalar alpha, Scalar beta, Scalar gamma, Scalar delta)
+    {
+        Scalar R1 = (-alpha - beta*v*v)*u + gamma*v;
+        return std::make_tuple( R1 + delta*u, -R1 - delta*v, -delta*(u - v));
+    }
+};
+
+
 /**
  *  A model with a finely-tuned chemical flux that, by construction, has an
  *  emergent Ginzburg-Landau bulk free energy, i.e.:
