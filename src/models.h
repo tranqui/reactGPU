@@ -3,7 +3,7 @@
 
 /**
  * Two-component model for cell polarisation adapted from:
- *   Mori, Y., Jilkine, A., & Edelstein-Keshet, L. (2008).
+ *   Mori, Y., Jilkine, A., and Edelstein-Keshet, L. (2008).
  *   doi: 10.1529/biophysj.107.120824
  */
 struct CellPolarisation : public ChemicalFlux<CellPolarisation>
@@ -21,6 +21,18 @@ struct CellPolarisation : public ChemicalFlux<CellPolarisation>
 };
 
 
+/**
+ * Uniformly conserved pattern-forming model inspired by
+ *   Jacobs, B., Molenaar, J., and Deinum, E. E. (2019).
+ *   doi: 10.1371/journal.pone.0213188
+ *
+ * We have modified the model to remove an unnecessary fourth component, and
+ * to reuse the chemical flux of the Mori model for the conserved components.
+ *
+ * This model forms stable patterns when the diffusion coefficient of the third
+ * non-conserved component is much larger (by ~an order of magnitude) than the
+ * conserved components.
+ */
 struct JacobsModel : public ChemicalFlux<JacobsModel>
 {
     static constexpr int n = 2; // Hill coefficient for chemical flux.
@@ -41,7 +53,16 @@ struct JacobsModel : public ChemicalFlux<JacobsModel>
     }
 };
 
-
+/**
+ * Globally conserved pattern-forming model inspired by
+ *   Murray, S. M., and Sourjik V. (2017).
+ *   doi: 10.1038/nphys4155
+ *
+ * This model forms patterns through a different mechanism from the JacobsModel,
+ * that does not require strong heterogeneities in the diffusion coefficients.
+ * Curiously, the conservation law is dispensed with at small length-scales,
+ * only being restored globally..
+ */
 struct MurrayModel : public ChemicalFlux<MurrayModel>
 {
     inline static constexpr std::array<Scalar,4>
