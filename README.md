@@ -6,7 +6,7 @@ This package simulates reaction-diffusion systems of the form
 $$\partial_t \vec\rho = \vec{R} + \mathbf{D} \nabla^2 \vec\rho\,$$
 where $\vec{\rho} = (\rho^1, \dots, \rho^m)^\top \in \mathcal{C} \cong \mathbb{R}^m$ is an $m$-component chemical field, $\vec{R} \in \mathcal{C}$ is the chemical flux and $\mathbf{D}$ is a diagonal matrix of diffusion coefficients.
 
-Integration of the system is performed using in CUDA via an Euler forward method. The front-end has a python interface.
+Integration of the system is performed using in CUDA via an Euler forward method with a second-order finite difference stencil. The front-end has a python interface.
 
 
 ## Installation
