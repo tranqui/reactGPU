@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/801709232.svg)](https://zenodo.org/doi/10.5281/zenodo.11397676)
+
 # ReactGPU
 
 ## Overview
