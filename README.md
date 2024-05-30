@@ -18,6 +18,10 @@ cmake ..
 make -j8
 ```
 
+## Running simulations.
+
+To use the python front-end to run simulations see the example [simulatejacobs.py](examples/simulatejacobs.py).
+
 ## How to implement new models
 
 To add a new reaction-diffusion model you must add your definitions to the following file
