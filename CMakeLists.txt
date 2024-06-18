@@ -30,14 +30,3 @@ pybind11_add_module(reactor src/reactor.cc src/reactor.cuh src/models.h src/util
 target_link_libraries(reactor PUBLIC pybind11::headers Eigen3::Eigen PRIVATE reactor-kernel)
 target_include_directories(reactor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${EIGEN3_INCLUDE_DIRS})
 set_target_properties(reactor PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/reactgpu)
-
-# Copy Python files to the build directory
-file(GLOB PYTHON_FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/*.py)
-foreach(PY_FILE ${PYTHON_FILES})
-  get_filename_component(PY_FILENAME ${PY_FILE} NAME)
-  add_custom_command(
-    TARGET reactor POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy ${PY_FILE}
-            $<TARGET_FILE_DIR:reactor>/${PY_FILENAME}
-    COMMENT "Copying ${PY_FILE} to build directory")
-endforeach()
