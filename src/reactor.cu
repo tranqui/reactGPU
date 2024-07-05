@@ -248,7 +248,7 @@ Reactor<System>::Reactor(const InitialState& initial_fields,
         if (std::get<m>(initial_fields).rows() != nrows or std::get<1>(initial_fields).cols() != ncols)
             throw std::runtime_error("fields do not have the same dimensions!");
 
-        // Initialize device memory.
+        // Initialise device memory.
         cudaMallocPitch(&std::get<m>(fields), &pitch[m], pitch_width, nrows);
         set_field<m>(std::get<m>(initial_fields));
     };
