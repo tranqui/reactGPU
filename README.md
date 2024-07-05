@@ -10,7 +10,7 @@ where $\vec{\rho} = (\rho^1, \dots, \rho^m)^\top \in \mathcal{C} \cong \mathbb{R
 
 Integration of the system is performed using in CUDA via an Euler forward method with a second-order finite difference stencil. The front-end has a python interface.
 
-This package was used to explore phase separating and pattern-forming chemical systems in order to understand structure in biology. Specifically, it's possible to show that if $\vec{R}$ respects a conservation law then the high-dimensional reaction-diffusion equation above reduce to a simplified scalar field theory describing active matter. This field theory is called "Active Model B+" which extends [equilibrating models of oil-in-water phase separation](https://en.wikipedia.org/wiki/Cahn%E2%80%93Hilliard_equation). You can read more about this work in a [recently released preprint](https://arxiv.org/abs/2406.02409).
+This package was used to explore phase separating and pattern-forming chemical systems in order to understand structure in biology. Specifically, it's possible to show that if $\vec{R}$ respects a conservation law then the high-dimensional reaction-diffusion equation above reduce to a simplified scalar field theory describing active matter. This field theory is called "Active Model B+" which extends equilibrium models of [oil-in-water phase separation](https://en.wikipedia.org/wiki/Cahn%E2%80%93Hilliard_equation). You can read more about this work in a [recently released preprint](https://arxiv.org/abs/2406.02409).
 
 
 ## Installation
@@ -33,19 +33,9 @@ make
 Running simulations from the python front-end is straightforward. We illustrate this with an example pattern-forming system below (see [simulatejacobs.py](examples/simulatejacobs.py) for the complete code).
 
 We consider a three-component model adapted from the work of [Jacobs et al. (2019)](https://doi.org/10.1371/journal.pone.0213188). Labelling the components $\vec\rho = (u, v, w)^\top$, the chemical flux is
-$$
-\vec{R} =
-  \left[
-  \left( k + (1 - k) \frac{u^2}{1 + u^2} \right) v
-  - u
-  \right]
-  \begin{pmatrix} 1 \\ -1 \\ 0 \end{pmatrix}
-+ \begin{pmatrix}
-    - w u \\
-    + w u \\
-    cu (\psi - w) - dw
-  \end{pmatrix}
-$$
+
+$$\vec{R} = \left[ \left( k + (1 - k) \frac{u^2}{1 + u^2} \right) v - u \right] \begin{pmatrix} 1 \\\ -1 \\\ 0 \end{pmatrix} + \begin{pmatrix}  - w u \\\ + w u \\\ cu (\psi - w) - dw \end{pmatrix}$$
+
 where $(k, c, d, \psi)$ are parameters.
 The first term controls phase separation in the conserved quantity $\phi = u + v$, whereas the second term induces a longer length-scale that allows for patterns.
 
@@ -108,9 +98,8 @@ ax2.imshow(v)
 ax3.imshow(w)
 ```
 ![Example pattern-forming system](exampleJacobs.png)
-Note that the first two components vary rapidly across the droplet interfaces (and are essentially constant elsewhere) whereas the third component is much more diffuse. The slow variance of the third component occurs because we set it to have a much larger diffusion coefficient than the first two; this seems to be a necessary ingredient of pattern formation as we argue in [our preprint](https://arxiv.org/abs/2406.02409).
 
-The complete code leading to this pattern is given in [simulatejacobs.py](examples/simulatejacobs.py).
+Note that the first two components vary rapidly across the droplet interfaces (and are essentially constant elsewhere) whereas the third component is much more diffuse. The slow variance of the third component occurs because we set it to have a much larger diffusion coefficient than the first two; this seems to be a necessary ingredient of pattern formation as we argue in [our preprint](https://arxiv.org/abs/2406.02409). The complete code leading to this pattern is given in [simulatejacobs.py](examples/simulatejacobs.py).
 
 To simulate a new model one has to implement its $\vec{R}$ in the underlying C++/CUDA code.
 
