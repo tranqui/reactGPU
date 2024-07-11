@@ -30,7 +30,7 @@ make
 
 ## Usage
 
-Running simulations from the python front-end is straightforward. We illustrate this with an example pattern-forming system below (see [simulatejacobs.py](examples/simulatejacobs.py) for the complete code).
+Running simulations from the python front-end is straightforward. We illustrate this with an example pattern-forming system below (see [examples/simulatejacobs.py](examples/simulatejacobs.py) for the complete code).
 
 We consider a three-component model adapted from the work of [Jacobs et al. (2019)](https://doi.org/10.1371/journal.pone.0213188). Labelling the components $\vec\rho = (u, v, w)^\top$, the chemical flux is
 
