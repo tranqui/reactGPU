@@ -40,7 +40,7 @@ where $(k, c, d, \psi)$ are parameters.
 The first term controls phase separation in the conserved quantity $\phi = u + v$, whereas the second term induces a longer length-scale that allows for patterns.
 
 After building/installing the module we import it via
-```
+```python
 from reactgpu import reactor
 ```
 Various reaction-diffusion models are defined inside this module, but the one we need is `reactor.JacobsModel`.
